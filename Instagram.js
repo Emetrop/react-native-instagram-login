@@ -1,37 +1,37 @@
-import React, { useState, useEffect } from 'react'
-import PropTypes from 'prop-types'
-import qs from 'qs'
-import axios from 'axios'
-import { WebView } from "react-native-webview"
+import React, { useState, useEffect } from 'react';
+import PropTypes from 'prop-types';
+import { WebView } from 'react-native-webview';
 import {
   StyleSheet,
   View,
   Alert,
   Modal,
   TouchableOpacity,
-  Image
-} from 'react-native'
+  Image,
+} from 'react-native';
 
-const patchPostMessageJsCode = `(${String(function () {
-  var originalPostMessage = window.postMessage
-  var patchedPostMessage = function (message, targetOrigin, transfer) {
-    originalPostMessage(message, targetOrigin, transfer)
-  }
+import closeButton from './assets/close-button.png';
+
+// code below fixes this issue
+// https://github.com/hungdev/react-native-instagram-login/issues/16
+const patchPostMessageJsCode = `(${String(() => {
+  const originalPostMessage = window.postMessage;
+  const patchedPostMessage = function (message, targetOrigin, transfer) {
+    originalPostMessage(message, targetOrigin, transfer);
+  };
   patchedPostMessage.toString = function () {
-    return String(Object.hasOwnProperty).replace('hasOwnProperty', 'postMessage')
-  }
-  window.postMessage = patchedPostMessage
-})})();`
+    return String(Object.hasOwnProperty)
+      .replace('hasOwnProperty', 'postMessage');
+  };
+  window.postMessage = patchedPostMessage;
+})})();`;
 
-export default function Instagram({
+export default function InstagramOAuth({
   redirectUrl,
   appId,
-  appSecret,
-  responseType,
+  state,
   onLoginSuccess,
   onLoginFailure,
-  renderClose,
-  onClose,
   scopes,
   wrapperStyle,
   containerStyle,
@@ -39,189 +39,141 @@ export default function Instagram({
   webViewStyle,
   ...others
 }) {
-  const [modalVisible, setModalVisible] = useState(others.modalVisible)
-  const [key, setKey] = useState(1)
+  const [isModalVisible, setIsModalVisible] = useState(others.isModalVisible);
+  const [key, setKey] = useState(1);
 
-  useEffect(() => setModalVisible(others.modalVisible), [others.modalVisible])
+  useEffect(() => setIsModalVisible(others.isModalVisible), [others.isModalVisible]);
 
-  let webView
+  let webView;
 
-  const _onNavigationStateChange = async (webViewState) => {
-    const { url } = webViewState
-
-    if (webViewState.title === 'Instagram' && webViewState.url === 'https://www.instagram.com/') {
-      setKey(key + 1)
+  const onNavigationStateChange = ({ url, title }) => {
+    if (title === 'Instagram' && url === 'https://www.instagram.com/') {
+      // this key fixes
+      // https://github.com/hungdev/react-native-instagram-login/issues/24
+      setKey(key + 1);
     }
 
     if (!url || !url.startsWith(redirectUrl)) {
-      return
+      return;
     }
 
-    webView.stopLoading()
+    webView.stopLoading();
 
-    const match = url.match(/(#|\?)(.*)/)
-    const results = qs.parse(match[2])
-
-    setModalVisible(false)
-
-    if (results.access_token) {
-      // Keeping this to keep it backwards compatible,
-      // but also returning raw results to account for future changes.
-      onLoginSuccess(results.access_token, results)
-      return
+    if (url.indexOf('error=') !== -1) {
+      onLoginFailure(url);
+      return;
     }
 
-    if (!results.code) {
-      onLoginFailure(results)
-      return
-    }
+    const match = url.match(/(?:\?|&)code=(.*)#_/);
 
-    //Fetching to get token with appId, appSecret and code
-    let { code } = results
-    code = code.split('#_').join('')
+    setIsModalVisible(false);
 
-    if (responseType === 'code') {
-      if (code) {
-        onLoginSuccess(code, results)
-      } else {
-        onLoginFailure(results)
-      }
-      return
-    }
-
-    const headers = { 'Content-Type': 'application/x-www-form-urlencoded' }
-    const http = axios.create({ baseURL: 'https://api.instagram.com/oauth/access_token',  headers })
-
-    let form = new FormData()
-    form.append( 'app_id', appId )
-    form.append( 'app_secret', appSecret )
-    form.append( 'grant_type', 'authorization_code' )
-    form.append( 'redirect_uri', redirectUrl )
-    form.append( 'code', code )
-
-    const res = await http.post( '/', form )
-      .catch((error) => {
-        console.log( error.response )
-        return false
-      })
-
-    if (res) {
-      onLoginSuccess(res.data, results)
+    if (match.length !== 2) {
+      onLoginFailure(url);
     } else {
-      onLoginFailure(results)
+      onLoginSuccess(match[1], url);
     }
-  }
+  };
 
-  const _onMessage = (reactMessage) => {
+  const onMessage = (reactMessage) => {
     try {
-      const json = JSON.parse(reactMessage.nativeEvent.data)
+      const json = JSON.parse(reactMessage.nativeEvent.data);
       if (json && json.error_type) {
-        setModalVisible(false)
-        onLoginFailure(json)
+        setIsModalVisible(false);
+        onLoginFailure(json);
       }
     } catch (err) { }
-  }
+  };
 
-  const onPressClose = () => {
-    if (onClose) onClose()
-    setModalVisible(false)
-  }
+  const onClose = () => {
+    if (others.onClose) others.onClose();
+    setIsModalVisible(false);
+  };
 
-  const renderWebview = () => {
-    let uri = "https://api.instagram.com/oauth/authorize/?";
-    uri += `app_id=${appId}&`;
-    uri += `redirect_uri=${redirectUrl}&`;
-    uri += `response_type=${responseType}&`;
-    uri += `scope=${scopes.join(',')}`;
-
-    return (
-      <WebView
-        key={key}
-        incognito
-        startInLoadingState
-        cacheEnabled={false}
-        thirdPartyCookiesEnabled={false}
-        sharedCookiesEnabled={false}
-        domStorageEnabled={false}
-        containerStyle={containerStyle}
-        source={{ uri }}
-        style={[styles.webView, webViewStyle]}
-        onNavigationStateChange={_onNavigationStateChange}
-        onError={_onNavigationStateChange}
-        onMessage={_onMessage}
-        ref={webViewRef => { webView = webViewRef }}
-        injectedJavaScript={patchPostMessageJsCode}
-      />
-    )
-  }
+  let uri = 'https://api.instagram.com/oauth/authorize/?';
+  uri += `app_id=${appId}&`;
+  uri += `redirect_uri=${redirectUrl}&`;
+  uri += 'response_type=code&';
+  uri += `scope=${scopes.join(',')}&`;
+  uri += !state ? '' : `state=${state}`;
 
   return (
     <Modal
       transparent
       animationType="slide"
-      visible={modalVisible}
-      onRequestClose={() => setModalVisible(false)}
+      visible={isModalVisible}
+      onRequestClose={() => setIsModalVisible(false)}
     >
       <View style={[styles.container, containerStyle]}>
         <View style={[styles.wrapper, wrapperStyle]}>
-          {renderWebview()}
+          <WebView
+            incognito
+            startInLoadingState
+            key={key}
+            cacheEnabled={false}
+            thirdPartyCookiesEnabled={false}
+            sharedCookiesEnabled={false}
+            domStorageEnabled={false}
+            containerStyle={containerStyle}
+            onNavigationStateChange={onNavigationStateChange}
+            onError={onNavigationStateChange}
+            onMessage={onMessage}
+            injectedJavaScript={patchPostMessageJsCode}
+            source={{ uri }}
+            style={[styles.webView, webViewStyle]}
+            ref={(webViewRef) => { webView = webViewRef; }}
+          />
         </View>
         <TouchableOpacity
-          onPress={onPressClose}
+          onPress={onClose}
           style={[styles.close, closeStyle]}
-          accessibilityComponentType={'button'}
+          accessibilityComponentType="button"
           accessibilityTraits={['button']}
         >
-          {renderClose ? renderClose() : (
-            <Image
-              source={require('./assets/close-button.png')}
-              style={styles.imgClose}
-              resizeMode="contain"
-            />
-          )}
+          <Image
+            source={closeButton}
+            style={styles.imgClose}
+            resizeMode="contain"
+          />
         </TouchableOpacity>
       </View>
     </Modal>
-  )
+  );
 }
 
-Instagram.propTypes = {
+InstagramOAuth.propTypes = {
   appId: PropTypes.string.isRequired,
-  appSecret: PropTypes.string.isRequired,
-  redirectUrl: PropTypes.string,
-  scopes: PropTypes.array,
+  redirectUrl: PropTypes.string.isRequired,
+  scopes: PropTypes.arrayOf(PropTypes.oneOf(['user_media', 'user_profile'])).isRequired,
+  state: PropTypes.string,
   onLoginSuccess: PropTypes.func,
-  modalVisible: PropTypes.bool,
+  isModalVisible: PropTypes.bool,
   onLoginFailure: PropTypes.func,
   onClose: PropTypes.func,
-  responseType: PropTypes.oneOf(['code', 'token']),
   containerStyle: PropTypes.object,
   wrapperStyle: PropTypes.object,
   closeStyle: PropTypes.object,
   webViewStyle: PropTypes.object,
-}
+};
 
-Instagram.defaultProps = {
-  redirectUrl: 'https://google.com',
-  responseType: 'code',
-  scopes: ['basic'],
-  onClose: null,
+InstagramOAuth.defaultProps = {
+  isModalVisible: true,
   onLoginFailure: console.debug,
-  onLoginSuccess: (token) => {
+  onLoginSuccess: (code) => {
     Alert.alert(
-      'Alert Title',
-      'Token: ' + token,
+      'Instagram Login Success',
+      `Code: ${code}`,
       [
-        { text: 'OK' }
+        { text: 'OK' },
       ],
-      { cancelable: false }
-    )
-  }
-}
+      { cancelable: false },
+    );
+  },
+};
 
 const styles = StyleSheet.create({
   webView: {
-    flex: 1
+    flex: 1,
   },
   container: {
     flex: 1,
@@ -246,10 +198,10 @@ const styles = StyleSheet.create({
     height: 30,
     justifyContent: 'center',
     alignItems: 'center',
-    borderRadius: 15
+    borderRadius: 15,
   },
   imgClose: {
     width: 30,
     height: 30,
-  }
-})
+  },
+});
